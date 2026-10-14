@@ -19,6 +19,9 @@
   plain-text default pastes it as it is, and ⌃⌘↵ on it falls back to ⌘↵ as on every other screen.
 - **Clipboard writes stamp a private `internalType` marker** so the poller skips Tinycast's own writes.
   If the writer and the poller ever disagree, the app re-captures its own pastes in a loop.
+- **An image pastes as its bytes and as its stored file.** `public.png` serves apps that take pixels;
+  `public.file-url` serves a terminal, which pastes only text and so receives the stored PNG's path.
+  Without the file URL, an image pasted into Ghostty arrives as a bare `v`.
 - **Paste Sequentially never promotes, and its walk is frozen at the first press.** `PasteSequence`
   keeps every entry's id, newest first, and resolves each against the live history, so a promotion
   cannot repeat or skip an entry and a deleted one is passed over rather than pasted.

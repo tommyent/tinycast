@@ -21,6 +21,7 @@ struct PasteboardTests {
         theBoundedReaderStopsAtItsLimit()
         aModernFileURLSuppressesTheLegacyFallback()
         fileEntriesWriteBackAsFiles()
+        imageEntriesWriteBackWithTheirFile()
         aVanishedFileWritesNothing()
 
         print("\(passes)/\(passes + failures) passed")
@@ -287,6 +288,26 @@ struct PasteboardTests {
             let read = pb.readObjects(forClasses: [NSURL.self]) as? [URL]
             expect(read?.first?.path == file.path, "and reads back as the same file URL")
             expect(pb.string(forType: .string) == file.path, "with the path as text, not the name")
+            expect(
+                pb.types?.contains(ClipboardManager.internalType) == true,
+                "marked, so the poller skips our own write")
+        }
+    }
+
+    /// A terminal pastes only text, so an image reaches it through its stored file's path.
+    static func imageEntriesWriteBackWithTheirFile() {
+        withScratch { dir in
+            let png = Data([0x89, 0x50, 0x4E, 0x47])
+            let file = dir.appendingPathComponent("shot.png")
+            try? png.write(to: file)
+            let store = ClipboardStore(directory: dir.appendingPathComponent("store"))
+            let item = ClipboardItem(imagePath: file.path, sourceBundleID: nil)
+            let pb = board()
+
+            expect(Paster.write(item, store: store, to: pb), "a stored image writes")
+            expect(pb.data(forType: .png) == png, "as its bytes, for apps that take pixels")
+            let read = pb.readObjects(forClasses: [NSURL.self]) as? [URL]
+            expect(read?.first?.path == file.path, "and as its stored file, for terminals")
             expect(
                 pb.types?.contains(ClipboardManager.internalType) == true,
                 "marked, so the poller skips our own write")

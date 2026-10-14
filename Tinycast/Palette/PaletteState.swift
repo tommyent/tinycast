@@ -27,7 +27,7 @@ final class PaletteState {
     var emojiCategoryFilter: EmojiCategoryFilter = .all
     /// Nil means the configured default; zoom only overrides it for this picker session.
     var emojiGridColumnsOverride: EmojiGridColumns?
-    /// Whether file search draws its Quick Look overlay; it follows whatever row is selected.
+    /// Whether file search or the clipboard draws its Quick Look overlay; it follows the selection.
     var fileSearchQuickLook = false
     /// Ordering out leaves the SwiftUI tree mounted, so a media preview needs this to stop playing.
     private(set) var isVisible = false

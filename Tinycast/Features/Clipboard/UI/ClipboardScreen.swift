@@ -50,6 +50,10 @@ struct ClipboardScreen: PaletteScreen {
             guard let item = item(at: selection), item.offersTextExtraction else { return false }
             core.clipboardCoordinator.copyImageText(item)
             return true
+        case .quickLook:
+            guard let item = item(at: selection), store.imageURL(for: item) != nil else { return false }
+            vm.fileSearchQuickLook.toggle()
+            return true
         default: return false
         }
     }
@@ -151,6 +155,14 @@ struct ClipboardScreen: PaletteScreen {
                     .fill(Theme.Colors.separator)
                     .frame(width: 1)
                 ClipboardPreview(item: selected)
+            }
+            .overlay {
+                if vm.fileSearchQuickLook, let selected, let url = store.imageURL(for: selected) {
+                    FileSearchQuickLook(
+                        result: FileSearchResult(
+                            url: url, isDirectory: false, homeDirectory: .homeDirectory)
+                    ) { vm.fileSearchQuickLook = false }
+                }
             }
         }
     }

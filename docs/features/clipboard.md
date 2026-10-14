@@ -241,6 +241,13 @@ bytes, so a text-dense scan can copy *partial* text under a success HUD, and an 
 extracts as empty and lands in **No text found**. The source row is not promoted — a copy is not a
 paste.
 
+## Quick Look
+
+⌘Y on an image entry opens the stored PNG in file search's in-panel Quick Look overlay, at the size of
+the panel rather than the preview pane. It shares `fileSearchQuickLook` with file search, so Escape,
+a mode change and hiding the palette close it the same way, and it follows the selection. Other
+entry kinds pass ⌘Y on.
+
 ## Type filter
 
 The clipboard header carries a `ClipboardFilterButton` at the trailing edge of the search field —

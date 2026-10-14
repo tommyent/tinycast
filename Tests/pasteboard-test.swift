@@ -22,6 +22,7 @@ struct PasteboardTests {
         aModernFileURLSuppressesTheLegacyFallback()
         fileEntriesWriteBackAsFiles()
         imageEntriesWriteBackWithTheirFile()
+        clopsMarkNamesItsRewrite()
         aVanishedFileWritesNothing()
 
         print("\(passes)/\(passes + failures) passed")
@@ -311,6 +312,33 @@ struct PasteboardTests {
             expect(
                 pb.types?.contains(ClipboardManager.internalType) == true,
                 "marked, so the poller skips our own write")
+        }
+    }
+
+    /// Clop skips a board carrying its mark, and a capture credits a marked board to Clop.
+    static func clopsMarkNamesItsRewrite() {
+        let rewrite = board()
+        rewrite.declareTypes([.png, ClipboardManager.clopOptimisedType], owner: nil)
+        rewrite.setString("true", forType: ClipboardManager.clopOptimisedType)
+        expect(ClipboardManager.isClopRewrite(rewrite), "Clop's own output reads as its rewrite")
+
+        let plain = board()
+        plain.declareTypes([.png], owner: nil)
+        plain.setData(Data([1]), forType: .png)
+        expect(!ClipboardManager.isClopRewrite(plain), "an unmarked image is the copier's")
+
+        withScratch { dir in
+            let file = dir.appendingPathComponent("shot.png")
+            try? Data([0x89, 0x50, 0x4E, 0x47]).write(to: file)
+            let store = ClipboardStore(directory: dir.appendingPathComponent("store"))
+            let image = board()
+            Paster.write(ClipboardItem(imagePath: file.path, sourceBundleID: nil), store: store, to: image)
+            expect(ClipboardManager.isClopRewrite(image), "an image paste carries the mark")
+
+            store.addText("note", sourceBundleID: nil)
+            let text = board()
+            Paster.write(store.items[0], store: store, to: text)
+            expect(!ClipboardManager.isClopRewrite(text), "a text paste does not")
         }
     }
 

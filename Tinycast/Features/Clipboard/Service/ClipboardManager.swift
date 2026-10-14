@@ -15,6 +15,15 @@ final class ClipboardManager {
         .init("com.apple.is-sensitive")
     ]
 
+    /// Clop's mark on its own output; Clop skips any board that carries it.
+    static let clopOptimisedType = NSPasteboard.PasteboardType("clop.optimisation.status")
+
+    static let clopBundleID = "com.lowtechguys.Clop"
+
+    static func isClopRewrite(_ pasteboard: NSPasteboard) -> Bool {
+        pasteboard.string(forType: clopOptimisedType) == "true"
+    }
+
     private let store: ClipboardStore
     private let settings: AppSettings
     private var timer: Timer?
@@ -136,17 +145,22 @@ final class ClipboardManager {
         // Never record secrets: skip copies tagged sensitive by any of the marker owners.
         if let types = pb.types, !Set(types).isDisjoint(with: Self.sensitiveTypes) { return }
 
-        // The pasteboard carries no source, so attribute it to the frontmost app.
-        let sourceBundleID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+        // Clop rewrites a copy while the copying app is still in front, so its mark outranks focus.
+        let isClopRewrite = Self.isClopRewrite(pb)
+        let frontmost = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+        let sourceBundleID = isClopRewrite ? Self.clopBundleID : frontmost
         if let sourceBundleID, settings.clipboardDisabledApps.contains(sourceBundleID) { return }
 
+        // Clop can put a path into its cache beside the optimised bytes; the bytes are the copy.
+        let keepsImage = isClopRewrite && pb.availableType(from: [.png, .tiff]) != nil
+
         // Ahead of the text branch: Finder puts the file's *name* on `.string` beside its URL.
-        if let paths = Self.fileURLs(on: pb) {
+        if !keepsImage, let paths = Self.fileURLs(on: pb) {
             store.addFiles(paths, sourceBundleID: sourceBundleID)
             return
         }
 
-        if let text = pb.string(forType: .string),
+        if !keepsImage, let text = pb.string(forType: .string),
             !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         {
             guard text.count <= Self.maxTextLength else { return }

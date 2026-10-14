@@ -81,6 +81,14 @@ the cap, and even a rejected modern file URL suppresses the legacy filenames fal
 re-capturing Tinycast's own writes, every write stamps a private `internalType` marker on the
 pasteboard and the poller skips anything carrying it.
 
+**A board carrying Clop's mark is Clop's copy.** Clop optimises a copied image about half a second
+later, while the copying app is still in front, and marks its output with `clop.optimisation.status`.
+The poller credits a marked board to `com.lowtechguys.Clop` instead of the frontmost app, so
+excluding a screenshot app drops its original and keeps Clop's copy. It also records the marked
+board's image ahead of any file or text, because Clop sometimes puts a path into its cache beside
+the bytes. An image paste carries the same mark, since Clop skips a marked board: unmarked, Clop
+optimised every paste again and the poller recorded the rewrite as a new entry.
+
 `stop()` is the off switch: it drops the timer and the fast-user-switching observers, and clears the
 `isCapturing` flag that `prepareForTinycastPasteboardMutation` reads — so a paste Tinycast performs
 itself no longer drains the pasteboard into history either.

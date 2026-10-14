@@ -130,10 +130,14 @@ enum Paster {
                 return false
             }
             pb.clearContents()
-            pb.declareTypes([.png, .fileURL, ClipboardManager.internalType], owner: nil)
+            pb.declareTypes(
+                [.png, .fileURL, ClipboardManager.clopOptimisedType, ClipboardManager.internalType],
+                owner: nil)
             pb.setData(data, forType: .png)
             // A terminal pastes only text, so the stored file is what reaches it, as its path.
             pb.setData(url.dataRepresentation, forType: .fileURL)
+            // Unmarked, Clop optimises every paste again and the poller records its rewrite.
+            pb.setString("true", forType: ClipboardManager.clopOptimisedType)
         case .file:
             guard let url = store.fileURL(for: item),
                 FileManager.default.fileExists(atPath: url.path)

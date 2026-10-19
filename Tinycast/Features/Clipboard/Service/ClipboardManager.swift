@@ -18,7 +18,8 @@ final class ClipboardManager {
     /// Clop's mark on its own output; Clop skips any board that carries it.
     static let clopOptimisedType = NSPasteboard.PasteboardType("clop.optimisation.status")
 
-    static let clopBundleID = "com.lowtechguys.Clop"
+    /// The writer's bundle ID, per nspasteboard.org; an empty string means it doesn't know.
+    static let sourceType = NSPasteboard.PasteboardType("org.nspasteboard.source")
 
     static func isClopRewrite(_ pasteboard: NSPasteboard) -> Bool {
         pasteboard.string(forType: clopOptimisedType) == "true"
@@ -29,6 +30,7 @@ final class ClipboardManager {
     private var timer: Timer?
     private var sessionTokens: [NotificationToken] = []
     private var lastChangeCount = 0
+    private var lastTinycastChangeCount: Int?
     private var isCapturing = false
 
     init(store: ClipboardStore, settings: AppSettings) {
@@ -102,6 +104,7 @@ final class ClipboardManager {
 
     // Load-bearing: a mismatched count means a foreign write the next poll must still see.
     func synchronizeAfterTinycastPasteboardMutation(changeCount: Int) {
+        lastTinycastChangeCount = changeCount
         guard NSPasteboard.general.changeCount == changeCount else { return }
         lastChangeCount = changeCount
     }
@@ -138,17 +141,28 @@ final class ClipboardManager {
     private func poll() {
         let pb = NSPasteboard.general
         guard pb.changeCount != lastChangeCount else { return }
-        lastChangeCount = pb.changeCount
+        capture(pb, frontmost: NSWorkspace.shared.frontmostApplication?.bundleIdentifier, at: Date())
+    }
 
-        if pb.types?.contains(Self.internalType) == true { return }
+    /// One board read, with focus and the clock injected so a harness can drive a private board.
+    func capture(_ pb: NSPasteboard, frontmost: String?, at now: Date) {
+        let change = PasteboardChange(count: pb.changeCount, at: now)
+        lastChangeCount = change.count
+
+        if pb.types?.contains(Self.internalType) == true {
+            lastTinycastChangeCount = change.count
+            return
+        }
 
         // Never record secrets: skip copies tagged sensitive by any of the marker owners.
         if let types = pb.types, !Set(types).isDisjoint(with: Self.sensitiveTypes) { return }
 
-        // Clop rewrites a copy while the copying app is still in front, so its mark outranks focus.
         let isClopRewrite = Self.isClopRewrite(pb)
-        let frontmost = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
-        let sourceBundleID = isClopRewrite ? Self.clopBundleID : frontmost
+        // Only image pastes carry Clop's mark; Clop can still optimise a pasted file or a restore.
+        if isClopRewrite, let own = lastTinycastChangeCount, change.count == own + 1 { return }
+
+        // A writer's own tag outranks focus, which can belong to another app by the time we poll.
+        let sourceBundleID = Self.source(on: pb) ?? frontmost
         if let sourceBundleID, settings.clipboardDisabledApps.contains(sourceBundleID) { return }
 
         // Clop can put a path into its cache beside the optimised bytes; the bytes are the copy.
@@ -156,7 +170,7 @@ final class ClipboardManager {
 
         // Ahead of the text branch: Finder puts the file's *name* on `.string` beside its URL.
         if !keepsImage, let paths = Self.fileURLs(on: pb) {
-            store.addFiles(paths, sourceBundleID: sourceBundleID)
+            store.addFiles(paths, sourceBundleID: sourceBundleID, change: change)
             return
         }
 
@@ -164,7 +178,7 @@ final class ClipboardManager {
             !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         {
             guard text.count <= Self.maxTextLength else { return }
-            store.addText(text, sourceBundleID: sourceBundleID)
+            store.addText(text, sourceBundleID: sourceBundleID, change: change)
             return
         }
 
@@ -178,8 +192,16 @@ final class ClipboardManager {
                     ? data
                     : NSBitmapImageRep(data: data)?.representation(using: .png, properties: [:])
                 guard let png else { return }
-                await store.addImage(png, sourceBundleID: sourceBundleID)
+                await store.addImage(
+                    png, sourceBundleID: sourceBundleID, change: change, rewrite: isClopRewrite)
             }
         }
+    }
+
+    static func source(on pasteboard: NSPasteboard) -> String? {
+        guard let bundleID = pasteboard.string(forType: sourceType), !bundleID.isEmpty else {
+            return nil
+        }
+        return bundleID
     }
 }

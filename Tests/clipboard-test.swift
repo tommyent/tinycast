@@ -27,6 +27,10 @@ struct ClipboardTests {
         importedImagesArriveOnce()
         multiFileCopyMakesOneRowEach()
         referencedFilesOutliveTheirRows()
+        aRewriteReplacesTheEntryBeforeIt()
+        aRewrittenImageTakesItsBlobWithIt()
+        aPinnedEntryIsNeverRewritten()
+        onlyTheNextChangeSoonAfterIsARewrite()
         filePathsAreNeverATextForm()
         fileEntriesAreFoundByNameAndFolder()
         fileKindClassification()
@@ -630,6 +634,86 @@ struct ClipboardTests {
         }
     }
 
+    /// Clop's copy of a Sukusho file takes the file entry's place; the file itself is not ours.
+    static func aRewriteReplacesTheEntryBeforeIt() {
+        withStore { store, dir in
+            let shot = dir.appendingPathComponent("Sukusho.png")
+            try? Data("original".utf8).write(to: shot)
+            let copied = Date()
+            store.addFiles(
+                [shot.path], sourceBundleID: "com.tommyent.Sukusho",
+                change: .init(count: 7, at: copied))
+            addImage(
+                "optimised", to: store, source: "com.lowtechguys.Clop",
+                change: .init(count: 8, at: copied + 1), rewrite: true)
+
+            expect(store.items.count == 1, "Clop's rewrite takes the file entry's place")
+            expect(store.items.first?.kind == .image, "as an image")
+            expect(
+                store.items.first?.sourceBundleID == "com.tommyent.Sukusho",
+                "credited to the app that copied it")
+            expect(
+                FileManager.default.fileExists(atPath: shot.path),
+                "and the referenced file stays on disk")
+        }
+    }
+
+    /// An entry whose blob is ours goes with its blob, as any removal does.
+    static func aRewrittenImageTakesItsBlobWithIt() {
+        withStore { store, _ in
+            let copied = Date()
+            addImage("original", to: store, source: nil, change: .init(count: 3, at: copied))
+            let original = store.items.first?.imagePath
+            addImage(
+                "optimised", to: store, source: nil, change: .init(count: 4, at: copied + 0.5),
+                rewrite: true)
+
+            expect(store.items.count == 1, "an image entry is replaced too")
+            expect(
+                original.map { !FileManager.default.fileExists(atPath: $0) } == true,
+                "and its own blob is deleted")
+            let kept = store.items.first.flatMap(store.imageURL(for:)).flatMap {
+                try? Data(contentsOf: $0)
+            }
+            expect(kept == Data("optimised".utf8), "leaving Clop's bytes in the history")
+        }
+    }
+
+    /// A pin is a deliberate keep, so a rewrite of it lands as a new entry instead.
+    static func aPinnedEntryIsNeverRewritten() {
+        withStore { store, _ in
+            let copied = Date()
+            store.addText("keep", sourceBundleID: nil, change: .init(count: 1, at: copied))
+            store.togglePinned(store.items[0])
+            addImage(
+                "optimised", to: store, source: nil, change: .init(count: 2, at: copied + 1),
+                rewrite: true)
+
+            expect(store.items.count == 2, "the rewrite is added beside the pin")
+            expect(store.items.contains { $0.text == "keep" && $0.isPinned }, "and the pin stays")
+        }
+    }
+
+    /// Only Clop's very next change, soon after: anything else is a copy in its own right.
+    static func onlyTheNextChangeSoonAfterIsARewrite() {
+        withStore { store, _ in
+            let copied = Date()
+            let late = copied + ClipboardStore.rewriteWindow + 2
+            store.addText("one", sourceBundleID: nil, change: .init(count: 1, at: copied))
+            addImage(
+                "gap", to: store, source: nil, change: .init(count: 3, at: copied + 1),
+                rewrite: true)
+            expect(store.items.count == 2, "a change in between makes a rewrite a new entry")
+
+            addImage(
+                "late", to: store, source: nil, change: .init(count: 4, at: late), rewrite: true)
+            expect(store.items.count == 3, "and so does one past the window")
+
+            addImage("plain", to: store, source: nil, change: .init(count: 5, at: late + 0.5))
+            expect(store.items.count == 4, "and an unmarked image never replaces anything")
+        }
+    }
+
     /// A path is not prose: it must never be filed as a link, a colour or an address.
     static func filePathsAreNeverATextForm() {
         let item = ClipboardItem(filePath: "/Users/me/apple.com/#FF5733.txt", sourceBundleID: nil)
@@ -736,6 +820,19 @@ struct ClipboardTests {
     // MARK: - Harness
 
     /// Runs `body` against a store rooted in a fresh temp directory, torn down afterwards.
+    /// `addImage` inserts after its blob write, so wait for the row rather than read too early.
+    static func addImage(
+        _ bytes: String, to store: ClipboardStore, source: String?, change: PasteboardChange,
+        rewrite: Bool = false
+    ) {
+        let before = store.items.first?.id
+        store.addImage(Data(bytes.utf8), sourceBundleID: source, change: change, rewrite: rewrite)
+        let deadline = Date().addingTimeInterval(2)
+        while store.items.first?.id == before, Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+        }
+    }
+
     static func withStore(_ body: (ClipboardStore, URL) -> Void) {
         let dir = scratchDirectory()
         defer { try? FileManager.default.removeItem(at: dir) }

@@ -14,7 +14,7 @@ struct ClipboardItem: Identifiable, Hashable, Sendable {
     /// Absolute path on disk; only files under `imagesDir` are ours to delete.
     let imagePath: String?
     let createdAt: Date
-    /// Bundle ID of the app frontmost when the copy was captured (see `ClipboardManager.poll`).
+    /// The copying app: the board's `org.nspasteboard.source`, else the frontmost app at capture.
     let sourceBundleID: String?
     /// When the entry was pinned; pins lead the list and are exempt from pruning.
     let pinnedAt: Date?
@@ -167,6 +167,12 @@ enum ClipboardChord: CaseIterable, Sendable {
     }
 }
 
+/// One pasteboard change as the poller read it, so a rewrite can find the capture it follows.
+struct PasteboardChange: Equatable, Sendable {
+    let count: Int
+    let at: Date
+}
+
 /// SQLite-backed clipboard history. See docs/features/clipboard.md#store.
 @MainActor
 @Observable
@@ -198,6 +204,11 @@ final class ClipboardStore {
     @ObservationIgnored private var textSearchMatches: [ClipboardItem] = []
 
     var maxAge: TimeInterval = ClipboardRetention.threeMonths.maxAge
+
+    /// The newest entry and the change that made it, which is all a rewrite may replace.
+    @ObservationIgnored private var newestCapture: (id: UUID, change: PasteboardChange)?
+    /// Room for Clop to optimise a large screenshot, too short to swallow a later copy.
+    nonisolated static let rewriteWindow: TimeInterval = 5
 
     /// One-entry memo so repeated renders reuse the FTS result; cleared when `items` changes.
     @ObservationIgnored private var searchCache:
@@ -356,32 +367,75 @@ final class ClipboardStore {
         return sqlite3_step(stmt) == SQLITE_ROW ? sqlite3_column_int64(stmt, 0) : 0
     }
 
-    func addText(_ text: String, sourceBundleID: String?) {
-        if items.first?.kind == .text, items.first?.text == text { return }
-        insert(ClipboardItem(text: text, sourceBundleID: sourceBundleID))
+    /// A repeat stands for the newest entry, so a rewrite of the repeat still finds it.
+    func addText(_ text: String, sourceBundleID: String?, change: PasteboardChange? = nil) {
+        if let newest = items.first, newest.kind == .text, newest.text == text {
+            noteCapture(of: newest, change)
+            return
+        }
+        let item = ClipboardItem(text: text, sourceBundleID: sourceBundleID)
+        insert(item)
+        noteCapture(of: item, change)
     }
 
     /// One row per file. Batched, so a multi-file copy prunes once rather than once per file.
-    func addFiles(_ paths: [String], sourceBundleID: String?) {
+    func addFiles(_ paths: [String], sourceBundleID: String?, change: PasteboardChange? = nil) {
         // Only a single file can be a ⌘C repeat, which is the case `addText` also guards.
-        if paths.count == 1, items.first?.kind == .file, items.first?.text == paths[0] { return }
+        if paths.count == 1, let newest = items.first, newest.kind == .file, newest.text == paths[0] {
+            noteCapture(of: newest, change)
+            return
+        }
+        var inserted: [ClipboardItem] = []
         for path in paths {
             let item = ClipboardItem(filePath: path, sourceBundleID: sourceBundleID)
             if let stmt = insertStmt { Self.bindAndInsert(stmt, item) }
             items.insert(item, at: 0)
+            inserted.append(item)
         }
         trimWindow()
         prune()
+        // A multi-file copy is several entries, none of which one rewritten image can stand for.
+        if inserted.count == 1 { noteCapture(of: inserted[0], change) }
     }
 
-    func addImage(_ data: Data, sourceBundleID: String?) {
+    /// A `rewrite` is Clop's optimised copy, which takes the place of the entry it rewrites.
+    func addImage(
+        _ data: Data, sourceBundleID: String?, change: PasteboardChange? = nil, rewrite: Bool = false
+    ) {
         let url = imagesDir.appendingPathComponent(UUID().uuidString + ".png")
         let item = ClipboardItem(imagePath: url.path, sourceBundleID: sourceBundleID)
         // The blob write is multi-MB I/O; only the row insert returns to the main actor.
         Task.detached(priority: .utility) { [weak self] in
             guard (try? data.write(to: url, options: .atomic)) != nil else { return }
-            await self?.insert(item)
+            await self?.insertImage(item, change: change, rewrite: rewrite)
         }
+    }
+
+    /// Decided at insert, not at capture: the entry being rewritten may itself be mid-write.
+    private func insertImage(_ item: ClipboardItem, change: PasteboardChange?, rewrite: Bool) {
+        var item = item
+        if rewrite, let change, let rewritten = entryRewritten(by: change) {
+            remove(rewritten)
+            item = ClipboardItem(
+                id: item.id, kind: .image, text: nil, imagePath: item.imagePath,
+                createdAt: item.createdAt, sourceBundleID: rewritten.sourceBundleID)
+        }
+        insert(item)
+        noteCapture(of: item, change)
+    }
+
+    /// The unpinned newest entry, made by the change just before `change` and only just now.
+    private func entryRewritten(by change: PasteboardChange) -> ClipboardItem? {
+        guard let capture = newestCapture, let newest = items.first, newest.id == capture.id,
+            !newest.isPinned, change.count == capture.change.count + 1,
+            change.at.timeIntervalSince(capture.change.at) <= Self.rewriteWindow
+        else { return nil }
+        return newest
+    }
+
+    private func noteCapture(of item: ClipboardItem, _ change: PasteboardChange?) {
+        guard let change else { return }
+        newestCapture = (item.id, change)
     }
 
     /// Bulk-insert from an import: original timestamps, external image paths, deduped.

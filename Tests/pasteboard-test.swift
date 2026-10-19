@@ -24,6 +24,10 @@ struct PasteboardTests {
         imageEntriesWriteBackWithTheirFile()
         clopsMarkNamesItsRewrite()
         aVanishedFileWritesNothing()
+        clopsCopyReplacesTheCaptureItRewrites()
+        clopsCopyOfOurFilePasteIsIgnored()
+        anUnrelatedClopCopyIsRecorded()
+        theSourceTagOutranksFocus()
 
         print("\(passes)/\(passes + failures) passed")
         if failures > 0 { exit(1) }
@@ -315,7 +319,7 @@ struct PasteboardTests {
         }
     }
 
-    /// Clop skips a board carrying its mark, and a capture credits a marked board to Clop.
+    /// Clop skips a board carrying its mark, so an image paste carries it and Clop leaves it be.
     static func clopsMarkNamesItsRewrite() {
         let rewrite = board()
         rewrite.declareTypes([.png, ClipboardManager.clopOptimisedType], owner: nil)
@@ -352,6 +356,150 @@ struct PasteboardTests {
 
             expect(!Paster.write(store.items[0], store: store, to: pb), "a vanished file refuses")
             expect(pb.string(forType: .string) == "untouched", "and leaves the pasteboard alone")
+        }
+    }
+
+    // MARK: - Capture
+
+    /// The Sukusho-then-Clop sequence through the poller: one entry, Clop's bytes, Sukusho's name.
+    static func clopsCopyReplacesTheCaptureItRewrites() {
+        withScratch { dir in
+            let (store, manager, _) = capturing(in: dir)
+            let pb = board()
+            defer { pb.releaseGlobally() }
+            let copied = Date()
+            write(to: pb) {
+                $0.setData(Data("original".utf8), forType: .png)
+                $0.setString("com.tommyent.Sukusho", forType: ClipboardManager.sourceType)
+            }
+            capture(pb, with: manager, into: store, at: copied)
+            let cached = dir.appendingPathComponent("clop-cache.png")
+            try? Data("optimised".utf8).write(to: cached)
+            // Clop's shape with its file path option on: the path rides beside the bytes.
+            write(to: pb) {
+                $0.setString(cached.absoluteString, forType: .fileURL)
+                $0.setData(Data("optimised".utf8), forType: .png)
+                $0.setString(cached.path, forType: .string)
+                $0.setString("true", forType: ClipboardManager.clopOptimisedType)
+            }
+            capture(pb, with: manager, into: store, at: copied + 1)
+
+            expect(store.items.count == 1, "Clop's copy replaces the capture instead of adding one")
+            expect(store.items.first?.kind == .image, "as the optimised image, not Clop's path")
+            expect(
+                store.items.first?.sourceBundleID == "com.tommyent.Sukusho",
+                "still credited to the app that copied it")
+        }
+    }
+
+    /// A file paste carries no Clop mark, so Clop optimising it must not come back as an entry.
+    static func clopsCopyOfOurFilePasteIsIgnored() {
+        withScratch { dir in
+            let (store, manager, _) = capturing(in: dir)
+            let file = dir.appendingPathComponent("shot.png")
+            try? Data("png".utf8).write(to: file)
+            store.addFiles([file.path], sourceBundleID: nil)
+            let pb = board()
+            defer { pb.releaseGlobally() }
+
+            expect(Paster.write(store.items[0], store: store, to: pb), "the file paste writes")
+            expect(!ClipboardManager.isClopRewrite(pb), "unmarked, so Clop may optimise it")
+            capture(pb, with: manager, into: store)
+            writeClop(to: pb)
+            capture(pb, with: manager, into: store)
+            expect(store.items.count == 1, "Clop's copy of our paste adds no entry")
+        }
+    }
+
+    /// A Clop board that follows nothing we captured or wrote is an ordinary copy.
+    static func anUnrelatedClopCopyIsRecorded() {
+        withScratch { dir in
+            let (store, manager, _) = capturing(in: dir)
+            let pb = board()
+            defer { pb.releaseGlobally() }
+            writeClop(to: pb)
+            capture(pb, with: manager, into: store)
+            expect(store.items.count == 1, "a Clop copy with nothing before it is recorded")
+            expect(
+                store.items.first?.sourceBundleID == "com.google.Chrome",
+                "and credited like any other copy")
+
+            write(to: pb) { $0.setString("first", forType: .string) }
+            capture(pb, with: manager, into: store)
+            write(to: pb) { $0.setString("never read", forType: .string) }
+            writeClop(to: pb)
+            capture(pb, with: manager, into: store)
+            expect(store.items.count == 3, "and so is one a change past the newest entry")
+            expect(store.items.first?.kind == .image, "as its image")
+        }
+    }
+
+    /// A writer's tag names the source over focus, for the entry and for exclusions alike.
+    static func theSourceTagOutranksFocus() {
+        withScratch { dir in
+            let (store, manager, settings) = capturing(in: dir)
+            let pb = board()
+            defer { pb.releaseGlobally() }
+            @MainActor func copy(_ text: String, taggedAs source: String) {
+                write(to: pb) {
+                    $0.setString(text, forType: .string)
+                    $0.setString(source, forType: ClipboardManager.sourceType)
+                }
+                capture(pb, with: manager, into: store)
+            }
+
+            copy("tagged", taggedAs: "com.tommyent.Sukusho")
+            expect(
+                store.items.first?.sourceBundleID == "com.tommyent.Sukusho",
+                "the tag names the source though another app is in front")
+            copy("untagged", taggedAs: "")
+            expect(
+                store.items.first?.sourceBundleID == "com.google.Chrome",
+                "an empty tag falls back to the front app")
+
+            settings.clipboardDisabledApps = ["com.tommyent.Sukusho"]
+            copy("excluded", taggedAs: "com.tommyent.Sukusho")
+            expect(store.items.first?.text == "untagged", "an excluded tagged app's copy is dropped")
+
+            settings.clipboardDisabledApps = ["com.google.Chrome"]
+            copy("allowed", taggedAs: "com.tommyent.Sukusho")
+            expect(
+                store.items.first?.text == "allowed",
+                "and an excluded front app no longer drops a tagged copy")
+        }
+    }
+
+    static func capturing(in dir: URL) -> (ClipboardStore, ClipboardManager, AppSettings) {
+        let store = ClipboardStore(directory: dir.appendingPathComponent("store"))
+        let settings = AppSettings()
+        return (store, ClipboardManager(store: store, settings: settings), settings)
+    }
+
+    /// A write as Clop and most apps make one: a clear and a single item, so a single change.
+    static func write(to pb: NSPasteboard, _ fill: (NSPasteboardItem) -> Void) {
+        let item = NSPasteboardItem()
+        fill(item)
+        pb.clearContents()
+        pb.writeObjects([item])
+    }
+
+    static func writeClop(to pb: NSPasteboard) {
+        write(to: pb) {
+            $0.setData(Data("optimised".utf8), forType: .png)
+            $0.setString("true", forType: ClipboardManager.clopOptimisedType)
+        }
+    }
+
+    /// An image lands after its blob write, so give a capture time to arrive, or not to.
+    static func capture(
+        _ pb: NSPasteboard, with manager: ClipboardManager, into store: ClipboardStore,
+        at now: Date = Date()
+    ) {
+        let before = store.items.first?.id
+        manager.capture(pb, frontmost: "com.google.Chrome", at: now)
+        let deadline = Date().addingTimeInterval(0.5)
+        while store.items.first?.id == before, Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.01))
         }
     }
 

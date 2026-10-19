@@ -81,13 +81,26 @@ the cap, and even a rejected modern file URL suppresses the legacy filenames fal
 re-capturing Tinycast's own writes, every write stamps a private `internalType` marker on the
 pasteboard and the poller skips anything carrying it.
 
-**A board carrying Clop's mark is Clop's copy.** Clop optimises a copied image about half a second
-later, while the copying app is still in front, and marks its output with `clop.optimisation.status`.
-The poller credits a marked board to `com.lowtechguys.Clop` instead of the frontmost app, so
-excluding a screenshot app drops its original and keeps Clop's copy. It also records the marked
-board's image ahead of any file or text, because Clop sometimes puts a path into its cache beside
-the bytes. An image paste carries the same mark, since Clop skips a marked board: unmarked, Clop
-optimised every paste again and the poller recorded the rewrite as a new entry.
+**A copy's source is the writer's own `org.nspasteboard.source` tag** (nspasteboard.org's bundle-ID
+type), and the frontmost app only when the board has none or an empty one. The disabled-apps check
+reads the same answer, so excluding an app drops what it tags even while another app is in front.
+
+**Clop's optimised copy stands in for what it rewrites.** Clop marks its write with
+`clop.optimisation.status = true` about a second after a copy, and its clear-and-write is a single
+change. When that board is the very next change after the one that made the newest entry, within
+`ClipboardStore.rewriteWindow` (5s), and that entry isn't pinned, the store swaps the entry for
+Clop's image at insert time and keeps the old source. The old row goes through `remove`, so only a
+blob Tinycast owns is deleted and a referenced file stays on disk. Any other Clop board is an
+ordinary copy. Its image is read ahead of the path Clop can put beside it.
+
+**Pastes are kept out of Clop's way twice.** An image paste carries Clop's mark, since Clop skips a
+marked board. Clop still optimises an image *file* on the board, so a file paste or a
+`TextInjector` restore can come back rewritten; a Clop board that is the very next change after a
+write of Tinycast's own — seen by its marker, or reported through
+`synchronizeAfterTinycastPasteboardMutation` — is therefore not recorded. A paste the poller never
+sees, because Clop rewrote it within the same tick, has no count to match, so that rewrite still
+lands as an entry. `capture(_:frontmost:at:)` takes focus and the clock as parameters, so
+`pasteboard-test` drives all of this on a private board.
 
 `stop()` is the off switch: it drops the timer and the fast-user-switching observers, and clears the
 `isCapturing` flag that `prepareForTinycastPasteboardMutation` reads — so a paste Tinycast performs
